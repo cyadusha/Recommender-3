@@ -1,0 +1,130 @@
+---
+title: "Recommender 3"
+author: "Yadu"
+date: "February 22, 2017"
+output: html_document
+---
+
+## Motivation
+
+The purpose here is to implement singular value decomposition to build a content-based recommender system.
+
+## Data Creation
+
+We will build a toy dataset as follows. 
+
+```{r}
+moviesraw <- matrix(c(4, NA, 3, 5, 2, NA, 5, NA, 5, 4, NA, 4, 5, 3, 5, 4, 2, NA, 1, 1, 4, 2, 4, NA, 3, 5, 3, 5, 3, 4, 5, NA, NA, 5, NA, NA, 1, 3, 5, 5, NA, 4), nrow = 6, byrow = T)
+colnames(moviesraw) <- c("Batman Begins", "Alice in Wonderland", "Dumb and Dumber", "Equilibrium", "Matilda", "Salt", "Marley and Me")
+rownames(moviesraw) <- c("Adam", "Benjamin", "Charlie", "David", "Edward", "Matthew")
+moviesraw
+```
+
+## Checking the Spread
+
+First, we will obtain the similarity matrix and perform singular value decomposition to determine underlying relationships. 
+
+```{r}
+library(recommenderlab)
+m <- as(moviesraw, "realRatingMatrix")
+simm <- as.matrix(similarity(m, method = "cosine", which = "items"))
+simm
+```
+
+```{r}
+s <- svd(simm)
+s$u #left singular matrix
+```
+
+```{r}
+V <- s$v
+t(V) #right singular matrix
+```
+
+Due to the great variation in the eigenvalues, it can be inferred that dimension reduction is possible.
+
+```{r}
+s$d #eigenvalues
+```
+
+## Creating a Content-Based Recommender
+
+First, we will build a toy vector that contains text information about these movies hardcoded from imdb. 
+
+```{r}
+reviews <- c("After training with his mentor, Batman begins his fight to free crime-ridden Gotham City from the corruption that Scarecrow and the League of Shadows have cast upon it.", "Nineteen-year-old Alice returns to the magical world from her childhood adventure, where she reunites with her old friends and learns of her true destiny: to end the Red Queen's reign of terror.", "Twenty years since their first adventure, Lloyd and Harry go on a road trip to find Harry's newly discovered daughter, who was given up for adoption.", "In a fascist future where all forms of feeling are illegal, a man in charge of enforcing the law rises to overthrow the system.", "Story of a wonderful little girl, who happens to be a genius, and her wonderful teacher vs. the worst parents ever and the worst school principal imaginable.", "A CIA agent goes on the run after a defector accuses her of being a Russian spy.", "A family learns important life lessons from their adorable, but naughty and neurotic dog.")
+reviews
+```
+
+Next, the `tm` package is used for text-mining where a corpus for each movie is created. 
+
+```{r}
+library(tm)
+movie_corpus <- Corpus(VectorSource(reviews))
+```
+
+Now a document-term matrix is created to determine the importance of each movie. Then, TF-IDF weighting is used adjusting for the fact that certain words appear more often.
+
+```{r}
+dtm <- DocumentTermMatrix(movie_corpus, control = list(removePunctuation = TRUE, removeNumbers = TRUE, stopwords = TRUE, tolower = TRUE, weighting = weightTfIdf))
+dtm_matrix <- as.matrix(dtm)
+dimnames(dtm_matrix)$Docs <- colnames(moviesraw)
+```
+
+## Performing Singular Value Decomposition on Content
+
+Singular value decomposition is performed as follows. 
+
+```{r}
+movie_svd <- svd(dtm_matrix)
+Sigmak <- movie_svd$d; Uk <- movie_svd$u; Vk <- t(as.matrix(movie_svd$v))
+```
+
+## Creating the System
+
+The reduced transposed matrix below is the basis for this recommender system with the columns representing the 5 movies and the rows representing the 5 singular values. 
+
+```{r}
+movie_cat <- as.matrix(t(Uk))
+dimnames(movie_cat) <- list(SVs = paste0("sv", 1:7), Movies = colnames(moviesraw))
+```
+
+A similar matrix of users and categories can be created now after normalizing the toy dataset and then creating a mean-centered matrix. 
+
+```{r}
+library(recommenderlab)
+movies <- as(moviesraw, "realRatingMatrix")
+movies_norm <- normalize(movies)
+norm_cat <- as.vector(movies_norm@data)
+norm_cat <- ifelse(norm_cat == 0, NA, norm_cat)
+norm_cat <- matrix(norm_cat, nrow = nrow(movies), ncol = ncol(movies))
+
+user_cat <- matrix(nrow = nrow(moviesraw), ncol = ncol(moviesraw))
+for (i in 1:nrow(user_cat)){
+  for (j in 1:ncol(user_cat)){
+    user_cat[i,j] <- sum(norm_cat[i,]*movie_cat[j,], na.rm = T)/sum(movie_cat[j,] != 0) 
+  }
+}
+```
+
+Now that both matrices have been created, Pearson's correlation can be used to estimate the ratings for unrated movies.
+
+```{r}
+estimated <- matrix(nrow = nrow(moviesraw), ncol = ncol(moviesraw))
+colnames(estimated) = colnames(moviesraw)
+rownames(estimated) = rownames(moviesraw)
+for (i in 1:nrow(estimated)){
+  for(j in 1:ncol(estimated)){
+    if(is.na(norm_cat[i,j])){
+      for(k in 1:nrow(movie_cat)){
+        num <- sum(user_cat[i,k]*movie_cat[k,j])
+        den <- sqrt(sum(user_cat[i,]^2, na.rm = T))*sqrt(sum(movie_cat[,j]^2, na.rm = T))
+      }
+      estimated[i,j] <- num/den
+    }else{estimated[i,j] <- NA}
+  }
+}
+estimated
+```
+
+SVD is not a suitable method to implement when building a content-based recommender system. The reason for this is because the ratings for this matrix are supposed to be between 1 and 5. There are ratings that are 0 as well as ratings that are close to 0. It seems that content-based recommendations would not suffice. 
